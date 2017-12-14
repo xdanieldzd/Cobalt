@@ -1,5 +1,3 @@
-Cobalt License
-==============
 The MIT License (MIT)
 
 Copyright (c) 2015-2017 xdaniel (Daniel R.) / DigitalZero Domain
