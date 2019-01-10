@@ -99,7 +99,7 @@ namespace Cobalt.Texture
 
         public void Activate(TextureUnit textureUnit)
         {
-            if (lastTextureBound != textureHandle)
+            if (lastTextureBound != textureHandle || lastTextureUnitUsed != textureUnit)
             {
                 if (textureHandle == -1) throw new InvalidOperationException("Invalid texture handle");
                 if (lastTextureUnitUsed != textureUnit)

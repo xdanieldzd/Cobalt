@@ -37,8 +37,6 @@ namespace Cobalt.Texture
                 }
             }
 
-            //bitmap.Save(@"C:\temp\glsl\image-test-" + Path.GetFileNameWithoutExtension(filename) + ".png");
-
             return new Texture(bitmap);
         }
 
@@ -77,23 +75,206 @@ namespace Cobalt.Texture
         private static Bitmap LoadDDS(EndianBinaryReader reader)
         {
             DDSHeader header = new DDSHeader(reader);
-            Bitmap bitmap = new Bitmap((int)header.Width, (int)header.Height);
+            Bitmap bitmap = new Bitmap((int)header.Width, (int)header.Height, PixelFormat.Format32bppArgb);
 
-            DxtFormat dxtFormat = DxtFormat.DXT1;
-            switch (header.PixelFormat.FourCC)
+            byte[] pixelData = null;
+
+            if (header.PixelFormat.Flags.HasFlag(DDPF.FourCC))
             {
-                case "DXT1": dxtFormat = DxtFormat.DXT1; break;
-                case "DXT3": dxtFormat = DxtFormat.DXT3; break;
-                case "DXT5": dxtFormat = DxtFormat.DXT5; break;
+                DxtFormat dxtFormat = DxtFormat.DXT1;
+                switch (header.PixelFormat.FourCC)
+                {
+                    case "DXT1": dxtFormat = DxtFormat.DXT1; break;
+                    case "DXT3": dxtFormat = DxtFormat.DXT3; break;
+                    case "DXT5": dxtFormat = DxtFormat.DXT5; break;
+                }
+
+                pixelData = DecompressDxt(reader, dxtFormat, (int)header.Width, (int)header.Height);
+            }
+            else
+            {
+                // TODO: verify all of these, the non-32bit ones especially
+
+                pixelData = new byte[(header.Width * header.Height) * 4];
+                int rawLength = (int)(header.Height * (((header.Width * header.PixelFormat.RGBBitCount) + 7) / 8));
+
+                if (header.PixelFormat.Flags.HasFlag(DDPF.RGB))
+                {
+                    switch (header.PixelFormat.RGBBitCount)
+                    {
+                        case 32:
+                            if (CheckBitmasks(header.PixelFormat, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000))
+                            {
+                                // R8 G8 B8 A8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 4)
+                                {
+                                    pixelData[i + 2] = reader.ReadByte();
+                                    pixelData[i + 1] = reader.ReadByte();
+                                    pixelData[i + 0] = reader.ReadByte();
+                                    pixelData[i + 3] = reader.ReadByte();
+                                }
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000))
+                            {
+                                // B8 G8 R8 A8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 4)
+                                {
+                                    pixelData[i + 0] = reader.ReadByte();
+                                    pixelData[i + 1] = reader.ReadByte();
+                                    pixelData[i + 2] = reader.ReadByte();
+                                    pixelData[i + 3] = reader.ReadByte();
+                                }
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0x00FF0000, 0x0000FF00, 0x000000FF, 0x00000000))
+                            {
+                                // B8 G8 R8 X8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 4)
+                                {
+                                    pixelData[i + 0] = reader.ReadByte();
+                                    pixelData[i + 1] = reader.ReadByte();
+                                    pixelData[i + 2] = reader.ReadByte();
+                                    pixelData[i + 3] = 0xFF;
+                                    reader.ReadByte();  // X
+                                }
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0x000000FF, 0x0000FF00, 0x00FF0000, 0x00000000))
+                            {
+                                // X8 B8 G8 R8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 4)
+                                {
+                                    reader.ReadByte();  // X
+                                    pixelData[i + 0] = reader.ReadByte();
+                                    pixelData[i + 1] = reader.ReadByte();
+                                    pixelData[i + 2] = reader.ReadByte();
+                                    pixelData[i + 3] = 0xFF;
+                                }
+                            }
+                            break;
+
+                        case 24:
+                            if (CheckBitmasks(header.PixelFormat, 0x000000FF, 0x0000FF00, 0x00FF0000, 0x00000000))
+                            {
+                                // R8 G8 B8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 3)
+                                {
+                                    pixelData[i + 2] = reader.ReadByte();
+                                    pixelData[i + 1] = reader.ReadByte();
+                                    pixelData[i + 0] = reader.ReadByte();
+                                    pixelData[i + 3] = 0xFF;
+                                }
+                            }
+                            break;
+
+                        case 16:
+                            if (CheckBitmasks(header.PixelFormat, 0x7C00, 0x03E0, 0x001F, 0x8000))
+                            {
+                                // B5 G5 R5 A1
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0xF800, 0x07E0, 0x001F, 0x0000))
+                            {
+                                // B5 G6 R5
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 2)
+                                {
+                                    UnpackRgb565(reader.ReadUInt16(), out byte r, out byte g, out byte b);
+                                    pixelData[i + 0] = b;
+                                    pixelData[i + 1] = g;
+                                    pixelData[i + 2] = r;
+                                    pixelData[i + 3] = 0xFF;
+                                }
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0x0F00, 0x00F0, 0x000F, 0xF000))
+                            {
+                                // B4 G4 R4 A4
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 2)
+                                {
+                                    byte bg = reader.ReadByte();
+                                    byte ra = reader.ReadByte();
+                                    pixelData[i + 0] = (byte)((bg & 0xF0) | (bg & 0xF0) >> 4);
+                                    pixelData[i + 1] = (byte)((bg & 0x0F) << 4 | (bg & 0x0F));
+                                    pixelData[i + 2] = (byte)((ra & 0xF0) | (ra & 0xF0) >> 4);
+                                    pixelData[i + 3] = (byte)((ra & 0x0F) << 4 | (ra & 0x0F));
+                                }
+                            }
+                            break;
+                    }
+                }
+                else if (header.PixelFormat.Flags.HasFlag(DDPF.Luminance))
+                {
+                    switch (header.PixelFormat.RGBBitCount)
+                    {
+                        case 16:
+                            if (CheckBitmasks(header.PixelFormat, 0x00FF, 0x0000, 0x0000, 0x00FF))
+                            {
+                                // R8 G8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 2)
+                                {
+                                    byte v = reader.ReadByte();
+                                    byte a = reader.ReadByte();
+                                    pixelData[i + 2] = v;
+                                    pixelData[i + 1] = v;
+                                    pixelData[i + 0] = v;
+                                    pixelData[i + 3] = a;
+                                }
+                            }
+                            break;
+
+                        case 8:
+                            if (CheckBitmasks(header.PixelFormat, 0xFF, 0x00, 0x00, 0x00))
+                            {
+                                // R8
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 1)
+                                {
+                                    byte v = reader.ReadByte();
+                                    pixelData[i + 2] = v;
+                                    pixelData[i + 1] = v;
+                                    pixelData[i + 0] = v;
+                                    pixelData[i + 3] = v;
+                                }
+                            }
+                            else if (CheckBitmasks(header.PixelFormat, 0xF0, 0x00, 0x00, 0x0F))
+                            {
+                                // R4 G4
+                                for (int i = 0, j = 0; j < rawLength; i += 4, j += 1)
+                                {
+                                    byte v = reader.ReadByte();
+                                    pixelData[i + 2] = (byte)((v & 0xF0) | (v & 0xF0) >> 4);
+                                    pixelData[i + 1] = (byte)((v & 0xF0) | (v & 0xF0) >> 4);
+                                    pixelData[i + 0] = (byte)((v & 0xF0) | (v & 0xF0) >> 4);
+                                    pixelData[i + 3] = (byte)((v & 0x0F) << 4 | (v & 0x0F));
+                                }
+                            }
+                            break;
+                    }
+                }
+                else if (header.PixelFormat.Flags.HasFlag(DDPF.Alpha))
+                {
+                    if (header.PixelFormat.RGBBitCount == 8)
+                    {
+                        // A8
+                        for (int i = 0, j = 0; j < rawLength; i += 4, j += 1)
+                        {
+                            pixelData[i + 2] = 0xFF;
+                            pixelData[i + 1] = 0xFF;
+                            pixelData[i + 0] = 0xFF;
+                            pixelData[i + 3] = reader.ReadByte();
+                        }
+                    }
+                }
             }
 
-            byte[] pixelData = DecompressDxt(reader, dxtFormat, (int)header.Width, (int)header.Height);
-
-            BitmapData bmpData = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, bitmap.PixelFormat);
-            Marshal.Copy(pixelData, 0, bmpData.Scan0, pixelData.Length);
-            bitmap.UnlockBits(bmpData);
+            if (pixelData != null)
+            {
+                BitmapData bmpData = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, bitmap.PixelFormat);
+                Marshal.Copy(pixelData, 0, bmpData.Scan0, pixelData.Length);
+                bitmap.UnlockBits(bmpData);
+            }
 
             return bitmap;
+        }
+
+        private static bool CheckBitmasks(DDSPixelFormat pixelFormat, uint r, uint g, uint b, uint a)
+        {
+            return (pixelFormat.RBitMask == r && pixelFormat.GBitMask == g && pixelFormat.BBitMask == b && pixelFormat.ABitMask == a);
         }
 
         private static byte[] DecompressDxt(EndianBinaryReader reader, DxtFormat format, int width, int height)
